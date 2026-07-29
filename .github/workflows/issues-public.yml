@@ -23,8 +23,9 @@ name: Issue To Hexo Post & Auto Deploy
 on:
   issues:
     types: [opened, edited, renamed]
-  branches:
-    - main
+  push:
+    branches:
+      - main
   workflow_dispatch:
   
 # 权限配置
