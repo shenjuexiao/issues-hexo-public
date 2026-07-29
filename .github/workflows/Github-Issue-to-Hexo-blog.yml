@@ -39,8 +39,6 @@ jobs:
           token: ${{ secrets.ISSUES_PUBLIC }}
           
       - name: issue genrate hexo posts
-        # uses: flytam/github-issue-to-hexo@v1.0.3
-        # 20260710
         uses: flytam/github-issue-to-hexo@v1.0.3
         with:
           issue_url: ${{ env.ISSUE_URL }}
