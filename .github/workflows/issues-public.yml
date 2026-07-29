@@ -1,0 +1,71 @@
+# issues-public.yml
+# github.com/shenjuexiao
+# 20260729
+
+# https://github.com/flytam/blog/issues/27
+# issue 新增或者修改时触发工作流
+# 拉取 hexo 源文件
+# 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
+
+# 源仓库：存放 Hexo 主题、配置等源文件
+# 博客仓库：使用 Issues 作为文章存储，每个 Issue 就是一篇文章
+# 自动化构建：通过 GitHub Actions（issues-public.yml），拉取源仓库的 Hexo，作为博客模板，
+# 将 Issues 转换为 Hexo 文章，
+# 使用博客仓库 Issues，生成静态页面到 ./public，
+# 将 Issues 转换成文章，日期-标题.md 到 ./source/_posts
+
+
+name: Deploy Hexo Blog from Issues
+
+on:
+  issues:
+    types: [opened, edited, deleted, labeled]
+  schedule:
+    - cron: '0 */6 * * *'  # 每6小时触发一次
+  workflow_dispatch:       # 手动触发
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout source repository
+      uses: actions/checkout@v4
+      with:
+        repository: your-username/hexo-source-repo
+        path: hexo-source
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install dependencies
+      working-directory: ./hexo-source
+      run: npm install
+    
+    - name: Fetch issues and convert to posts
+      run: |
+        # 使用 GitHub CLI 获取所有 Issues
+        gh issue list --state all --limit 1000 --json number,title,body,labels,createdAt,updatedAt \
+          --repo your-username/your-blog-repo > issues.json
+        
+        # 解析并生成 .md 文件
+        node ./scripts/convert-issues.js issues.json ./hexo-source/source/_posts/
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Generate Hexo static files
+      working-directory: ./hexo-source
+      run: |
+        npx hexo clean
+        npx hexo generate
+    
+    - name: Deploy to GitHub Pages / 部署分支
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        deploy_key: ${{ secrets.ACTIONS_DEPLOY_KEY }}
+        publish_branch: gh-pages
+        publish_dir: ./hexo-source/public
+        external_repository: your-username/your-blog-repo

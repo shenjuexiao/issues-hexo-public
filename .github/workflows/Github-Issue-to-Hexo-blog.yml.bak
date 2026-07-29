@@ -10,7 +10,9 @@
 
 # 源仓库：Hexo 源文件
 # 博客仓库：Issues
-# 拉取源仓库的 Hexo，使用博客仓库 Issues，生成静态页面
+# issues-public.yml：拉取源仓库的 Hexo，作为博客模板，使用博客仓库 Issues，生成静态页面文件到 ./public，
+# 并将 Issues 转换成文章，日期-标题.md 文件到 ./source/_posts
+
 
 name: Deploy Blog
 
