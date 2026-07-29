@@ -7,95 +7,118 @@
 # 拉取 hexo 源文件
 # 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
 
-# 源仓库：存放 Hexo 主题、配置等源文件
-# 博客仓库：使用 Issues 作为文章存储，每个 Issue 就是一篇文章
+# 源仓库（shenjuexiao/issues-shenjuexiao）：存放 Hexo 主题、配置等源文件
+# 博客仓库（shenjuexiao/issues-public）：使用 Issues 作为文章存储，每个 Issue 就是一篇文章
 # 自动化构建：博客仓库通过 GitHub Actions（issues-public.yml），将 Issues 转换为 Hexo 文章（日期-标题.md），
 # 拉取源仓库的 Hexo，作为博客模板，生成静态页面到 ./public，
 # 再将 Hexo 文章（日期-标题.md），推送到源仓库 ./source/_posts
-# 部署使用 peaceiris/actions-gh-pages
+# 部署本仓库使用 actions/deploy-pages
+# 部署其他仓库使用 peaceiris/actions-gh-pages
+# 编写 issues-public.yml 包含脚本解析 issue，输出日期-标题.md
 
 
-name: Issue 转 Hexo 博文 + 自动构建部署
+name: Issue To Hexo Post & Auto Deploy
+
+# 触发条件：Issue 创建、编辑、重命名
 on:
   issues:
-    types: [opened, edited, closed, reopened]
-
+    types: [opened, edited, renamed]
+  branches:
+    - main
+  workflow_dispatch:
+  
+# 权限配置
 permissions:
   contents: write
-  issues: read
+  pages: write
+  id-token: write
 
 jobs:
-  build-deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出当前博客仓库
-        uses: actions/checkout@v4
-
-      # 1. 读取 Issue 信息，生成 Hexo md 文件
-      - name: 解析 Issue 生成博文
-        id: gen-post
+      - name: 配置 Git 身份
         run: |
-          # 获取 Issue 基础信息
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ISSUE_BODY="${{ github.event.issue.body }}"
-          ISSUE_DATE="${{ github.event.issue.created_at }}"
-          ISSUE_NUMBER="${{ github.event.issue.number }}"
-          TAGS=$(jq -r '.issue.labels | map(.name) | join(", ")' $GITHUB_EVENT_PATH)
+          git config --global user.name "${{ secrets.GITHUB_NAME }}"
+          git config --global user.email "${{ secrets.GITHUB_EMAIL }}"
 
-          # 格式化文件名 YYYY-MM-DD-title.md
-          FILE_DATE=$(date -d "$ISSUE_DATE" +"%Y-%m-%d")
-          SAFE_TITLE=$(echo "$ISSUE_TITLE" | sed 's/[\/:*?"<>| ]/-/g')
-          POST_FILE="${FILE_DATE}-${SAFE_TITLE}.md"
-
-          # 写入 Hexo Front-Matter + 正文
-          mkdir -p ./tmp_posts
-          cat > ./tmp_posts/$POST_FILE << EOF
----
-title: $ISSUE_TITLE
-date: $ISSUE_DATE
-tags: [$TAGS]
-issue_num: $ISSUE_NUMBER
----
-
-$ISSUE_BODY
-EOF
-          echo "POST_FILE=$POST_FILE" >> $GITHUB_ENV
-
-      # 2. 克隆 Hexo 源仓库（替换为你的源仓库地址）
       - name: 拉取 Hexo 源仓库模板
         uses: actions/checkout@v4
         with:
-          repository: shenjuexiao/issues-shenjuexiao # 替换源仓库
-          token: ${{ secrets.ISSUES_PUBLIC }} # 具备源仓库读写权限的 Personal Token
-          path: hexo-root
+          repository: shenjuexiao/issues-shenjuexiao
+          token: ${{ secrets.ISSUES_PUBLIC }}
+          path: hexo-source
 
-      # 3. 将生成的 md 文章推送到源仓库 source/_posts
-      - name: 推送博文至源仓库
+      - name: 解析 Issue 数据，生成 Hexo 文章 md 文件
+        id: parse_issue
         run: |
-          cp ./tmp_posts/${{ env.POST_FILE }} hexo-root/source/_posts/
-          cd hexo-root
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add source/_posts/${{ env.POST_FILE }}
-          git commit -m "auto add post from issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}"
-          git push origin main # 源仓库主分支
+          # 读取 GitHub 内置 Issue 环境变量
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
+          ISSUE_CREATED_AT="${{ github.event.issue.created_at }}"
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
 
-      # 4. 安装 Hexo 依赖，构建静态页面
-      - name: 安装 Hexo 依赖
+          # 1. 格式化日期：YYYY-MM-DD
+          POST_DATE=$(echo "$ISSUE_CREATED_AT" | cut -d'T' -f1)
+
+          # 2. 清洗标题：去除特殊字符，防止文件名非法
+          CLEAN_TITLE=$(echo "$ISSUE_TITLE" | sed -e 's/[\/:*?"<>|]/_/g' -e 's/ /-/g')
+
+          # 3. 定义文章文件名：日期-清洗后标题.md
+          POST_FILENAME="${POST_DATE}-${CLEAN_TITLE}.md"
+          POST_FILE_PATH="./hexo-source/source/_posts/${POST_FILENAME}"
+
+          # 4. 拼接 Hexo Front-matter 头部
+          cat > "$POST_FILE_PATH" <<EOF
+---
+title: "${ISSUE_TITLE}"
+date: ${ISSUE_CREATED_AT}
+tags: []
+categories: []
+issue_id: ${ISSUE_NUMBER}
+---
+
+${ISSUE_BODY}
+EOF
+
+          # 输出变量给后续步骤使用
+          echo "POST_FILENAME=${POST_FILENAME}" >> $GITHUB_ENV
+          echo "POST_FILE_PATH=${POST_FILE_PATH}" >> $GITHUB_ENV
+          echo "POST_DATE=${POST_DATE}" >> $GITHUB_ENV
+
+      - name: 提交并推送博文至源仓库 hexo-source
         run: |
-          cd hexo-root
+          cd hexo-source
+          git add source/_posts/${{ env.POST_FILENAME }}
+          git status
+          git commit -m "Auto add post from issue #${{ github.event.issue.number }}: ${{ env.POST_FILENAME }}"
+          git push origin main
+
+      - name: 安装 Node 与 Hexo 依赖，生成静态页面 public
+        run: |
+          cd hexo-source
+          node -v
+          npm -v
           npm install
-
-      - name: Hexo 生成静态文件
-        run: |
-          cd hexo-root
           npx hexo clean
           npx hexo generate
 
-      # 5. peaceiris/actions-gh-pages 部署 Pages
-      - name: 部署到 GitHub Pages
+      # 分支1：部署到当前仓库 Pages（actions/deploy-pages 官方方案）
+      - name: 打包静态产物
+        id: build_artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: hexo-source/public
+
+      - name: 部署到当前仓库 GitHub Pages
+        if: github.repository == github.event.repository.full_name
+        uses: actions/deploy-pages@v4
+
+      # 分支2：部署到其他仓库 Pages（peaceiris/actions-gh-pages 第三方方案）
+      - name: 部署到外部仓库 GitHub Pages
+        if: github.repository != github.event.repository.full_name
         uses: peaceiris/actions-gh-pages@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./hexo-root/public
+          github_token: ${{ secrets.ISSUES_PUBLIC }}
+          publish_dir: hexo-source/public
           publish_branch: gh-pages
