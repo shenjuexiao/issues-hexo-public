@@ -8,13 +8,17 @@
 # 拉取 hexo 源文件
 # 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
 
+# 源仓库：Hexo 源文件
+# 博客仓库：Issues
+# 拉取源仓库的 Hexo，使用博客仓库 Issues，生成静态页面
+
 name: Deploy Blog
 
 env:
   # hexo 源文件仓库
   BLOG_SOURCE: shenjuexiao/issues-shenjuexiao
   # issue 链接
-  ISSUE_URL: https://github.com/shenjuexiao/issues-public/issues
+  ISSUE_URL:  https://api.github.com/repos/shenjuexiao/issues-public/issues
   # blog 部署的页面
   BLOG: shenjuexiao/issues-public
   # ${{ github.event.issue.user.login }}
