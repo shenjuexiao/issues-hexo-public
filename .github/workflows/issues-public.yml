@@ -10,116 +10,197 @@
 # 源仓库（shenjuexiao/issues-shenjuexiao）：存放 Hexo 主题、配置等源文件
 # 博客仓库（shenjuexiao/issues-public）：使用 Issues 作为文章存储，每个 Issue 就是一篇文章
 # 自动化构建：博客仓库通过 GitHub Actions（issues-public.yml），将 Issues 转换为 Hexo 文章（日期-标题.md），
-# 拉取源仓库的 Hexo，作为博客模板，生成静态页面到 ./public，
-# 再将 Hexo 文章（日期-标题.md），推送到源仓库 ./source/_posts
+# 拉取源仓库的 Hexo，作为博客模板，生成静态页面到 gh-pages 分支 ./public，
+# 再将 Hexo 文章（日期-标题.md），推送到源仓库 main 分支 ./source/_posts
 # 部署本仓库使用 actions/deploy-pages
 # 部署其他仓库使用 peaceiris/actions-gh-pages
 # 编写 issues-public.yml 包含脚本解析 issue，输出日期-标题.md
+# 跨仓库使用 token: ${{ secrets.ISSUES_PUBLIC }}
 
 
-name: Issue To Hexo Post & Auto Deploy
+name: Issues to Hexo Blog
 
-# 触发条件：Issue 创建、编辑、重命名
 on:
   issues:
-    types: [opened, edited, renamed]
+    types: [opened, edited, closed, reopened]
+  schedule:
+    - cron: '0 */6 * * *'  # 每6小时自动运行一次
   push:
     branches:
       - main
-  workflow_dispatch:
-  
-# 权限配置
+  workflow_dispatch:  # 手动触发
+
 permissions:
   contents: write
+  issues: read
   pages: write
   id-token: write
 
+env:
+  SOURCE_REPO: shenjuexiao/issues-shenjuexiao
+  PUBLIC_REPO: shenjuexiao/issues-public
+  SOURCE_BRANCH: main
+  PUBLIC_BRANCH: main
+
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: 配置 Git 身份
-        run: |
-          git config --global user.name "${{ secrets.GITHUB_NAME }}"
-          git config --global user.email "${{ secrets.GITHUB_EMAIL }}"
-
-      - name: 拉取 Hexo 源仓库模板
+      - name: Checkout source repository
         uses: actions/checkout@v4
         with:
-          repository: shenjuexiao/issues-shenjuexiao
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_BRANCH }}
           token: ${{ secrets.ISSUES_PUBLIC }}
-          path: hexo-source
+          path: source-repo
 
-      - name: 解析 Issue 数据，生成 Hexo 文章 md 文件
-        id: parse_issue
-        run: |
-          # 读取 GitHub 内置 Issue 环境变量
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ISSUE_BODY="${{ github.event.issue.body }}"
-          ISSUE_CREATED_AT="${{ github.event.issue.created_at }}"
-          ISSUE_NUMBER="${{ github.event.issue.number }}"
-
-          # 1. 格式化日期：YYYY-MM-DD
-          POST_DATE=$(echo "$ISSUE_CREATED_AT" | cut -d'T' -f1)
-
-          # 2. 清洗标题：去除特殊字符，防止文件名非法
-          CLEAN_TITLE=$(echo "$ISSUE_TITLE" | sed -e 's/[\/:*?"<>|]/_/g' -e 's/ /-/g')
-
-          # 3. 定义文章文件名：日期-清洗后标题.md
-          POST_FILENAME="${POST_DATE}-${CLEAN_TITLE}.md"
-          POST_FILE_PATH="./hexo-source/source/_posts/${POST_FILENAME}"
-
-          # 4. 拼接 Hexo Front-matter 头部
-          cat > "$POST_FILE_PATH" <<EOF
----
-title: "${ISSUE_TITLE}"
-date: ${ISSUE_CREATED_AT}
-tags: []
-categories: []
-issue_id: ${ISSUE_NUMBER}
----
-
-${ISSUE_BODY}
-EOF
-
-          # 输出变量给后续步骤使用
-          echo "POST_FILENAME=${POST_FILENAME}" >> $GITHUB_ENV
-          echo "POST_FILE_PATH=${POST_FILE_PATH}" >> $GITHUB_ENV
-          echo "POST_DATE=${POST_DATE}" >> $GITHUB_ENV
-
-      - name: 提交并推送博文至源仓库 hexo-source
-        run: |
-          cd hexo-source
-          git add source/_posts/${{ env.POST_FILENAME }}
-          git status
-          git commit -m "Auto add post from issue #${{ github.event.issue.number }}: ${{ env.POST_FILENAME }}"
-          git push origin main
-
-      - name: 安装 Node 与 Hexo 依赖，生成静态页面 public
-        run: |
-          cd hexo-source
-          node -v
-          npm -v
-          npm install
-          npx hexo clean
-          npx hexo generate
-
-      # 分支1：部署到当前仓库 Pages（actions/deploy-pages 官方方案）
-      - name: 打包静态产物
-        id: build_artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Checkout public repository
+        uses: actions/checkout@v4
         with:
-          path: hexo-source/public
+          repository: ${{ env.PUBLIC_REPO }}
+          ref: ${{ env.PUBLIC_BRANCH }}
+          token: ${{ secrets.ISSUES_PUBLIC }}
+          path: public-repo
 
-      - name: 部署到当前仓库 GitHub Pages
-        if: github.repository == github.event.repository.full_name
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: source-repo/package-lock.json
+
+      - name: Install Hexo dependencies
+        working-directory: source-repo
+        run: npm install
+
+      - name: Parse Issues to Hexo posts
+        id: parse_issues
+        run: |
+          echo "Parsing issues from ${{ env.PUBLIC_REPO }}..."
+          
+          # 创建文章目录
+          mkdir -p source-repo/source/_posts
+          
+          # 使用 GitHub CLI 获取所有打开的 Issues
+          gh issue list --repo ${{ env.PUBLIC_REPO }} --state open --json number,title,body,labels,milestone,createdAt,updatedAt > issues.json
+          
+          # 解析并转换每个 Issue
+          jq -c '.[]' issues.json | while read -r issue; do
+            number=$(echo "$issue" | jq -r '.number')
+            title=$(echo "$issue" | jq -r '.title')
+            body=$(echo "$issue" | jq -r '.body')
+            created_at=$(echo "$issue" | jq -r '.createdAt')
+            labels=$(echo "$issue" | jq -r '.labels[].name' | tr '\n' ',' | sed 's/,$//')
+            milestone=$(echo "$issue" | jq -r '.milestone.title // ""')
+            
+            # 生成文件名：日期-标题.md
+            date_prefix=$(date -d "$created_at" +"%Y-%m-%d")
+            safe_title=$(echo "$title" | sed 's/[^a-zA-Z0-9\-]/ /g' | sed 's/ /-/g' | sed 's/--*/-/g' | tr '[:upper:]' '[:lower:]')
+            filename="${date_prefix}-${safe_title}.md"
+            
+            echo "Processing issue #$number: $filename"
+            
+            # 构建 Hexo 文章 Front Matter
+            cat > "source-repo/source/_posts/$filename" << EOF
+---
+title: $title
+date: $created_at
+updated: $(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
+issue_id: $number
+categories:
+  - ${milestone:-未分类}
+tags:
+  - ${labels:-未分类}
+---
+
+$body
+EOF
+            
+            echo "Created: $filename"
+            echo "created_files=$filename" >> $GITHUB_ENV
+          done
+          
+          echo "Total issues processed: $(ls -1 source-repo/source/_posts/*.md 2>/dev/null | wc -l)"
+        env:
+          GH_TOKEN: ${{ secrets.ISSUES_PUBLIC }}
+
+      - name: Update source repository with new posts
+        run: |
+          cd source-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 检查是否有变更
+          if git diff --quiet; then
+            echo "No changes to commit"
+          else
+            git add source/_posts/
+            git commit -m "Update posts from issues $(date -u +'%Y-%m-%d %H:%M:%S')"
+            git push https://x-access-token:${{ secrets.ISSUES_PUBLIC }}@github.com/${{ env.SOURCE_REPO }}.git ${{ env.SOURCE_BRANCH }}
+            echo "Pushed updates to source repository"
+          fi
+
+      - name: Generate Hexo static files
+        working-directory: source-repo
+        run: |
+          # 生成静态文件到 public 目录
+          npx hexo generate
+          # 复制 public 目录到当前工作目录
+          cp -r public ../public
+
+      - name: Push to gh-pages branch
+        run: |
+          # 创建或更新 gh-pages 分支
+          cd public
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 添加所有文件
+          git add .
+          git commit -m "Deploy: $(date -u +'%Y-%m-%d %H:%M:%S')"
+          
+          # 强制推送到 gh-pages 分支（使用 --force 覆盖历史）
+          git push --force https://x-access-token:${{ secrets.ISSUES_PUBLIC }}@github.com/${{ env.SOURCE_REPO }}.git main:gh-pages
+          echo "Deployed to gh-pages branch"
+
+  # 如果源仓库启用了 Pages，使用此 job 部署
+  deploy-pages:
+    needs: build
+    if: github.repository == 'shenjuexiao/issues-shenjuexiao'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
 
-      # 分支2：部署到其他仓库 Pages（peaceiris/actions-gh-pages 第三方方案）
-      - name: 部署到外部仓库 GitHub Pages
-        if: github.repository != github.event.repository.full_name
+  # 部署到其他仓库的示例（如果需要）
+  deploy-other:
+    needs: build
+    if: github.repository != 'shenjuexiao/issues-shenjuexiao'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout built site
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: gh-pages
+          token: ${{ secrets.ISSUES_PUBLIC }}
+          path: built-site
+      
+      - name: Deploy to other repository
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.ISSUES_PUBLIC }}
-          publish_dir: hexo-source/public
+          publish_dir: ./built-site
           publish_branch: gh-pages
+          destination_dir: ./public
+          force_orphan: true
