@@ -1,0 +1,141 @@
+# Github-Issue-to-Hexo-blog.yml
+# github.com/shenjuexiao
+# 20260710
+# 20260729
+
+# https://github.com/flytam/blog/issues/27
+# issue 新增或者修改时触发工作流
+# 拉取 hexo 源文件
+# 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
+
+name: Deploy Blog
+
+on:
+  push:
+    # 当推送到 main 分支时触发
+    branches: [ main ]  
+  # 允许手动触发工作流
+  workflow_dispatch:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  build:
+    # 使用 Ubuntu 最新版运行环境
+    runs-on: ubuntu-latest  
+    steps:
+      # 步骤1：检出代码仓库
+      - name: Checkout
+      - uses: actions/checkout@v4
+      
+      # 步骤2：安装 Node.js 环境
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # 使用 Node.js 24 版本
+          node-version: '24'  
+          
+      # 步骤3：从 GitHub Issues 生成博客文章
+      - name: Generate posts from issues
+        # 使用 GitHub 官方脚本 Action
+        uses: actions/github-script@v7  
+        with:
+          # 使用自动提供的 GITHUB_TOKEN
+          github-token: ${{ secrets.GITHUB_TOKEN }}  
+          script: |
+            // 引入 Node.js 文件系统模块
+            const fs = require('fs');
+            // 引入 Node.js 路径处理模块
+            const path = require('path');
+            
+            // 调用 GitHub API 获取仓库中的所有 Issues
+            const { data: issues } = await github.rest.issues.listForRepo({
+              // 用户名
+              owner: 'shenjuexiao',
+              // 仓库名称
+              repo: 'issues-public', 
+              // 获取所有状态的 Issues           
+              state: 'all',    
+              // 每页获取100条              
+              per_page: 100                 
+            });
+            
+            // 设置博客文章的输出目录
+            const outputDir = 'source/_posts';
+            // 如果目录不存在，则递归创建
+            if (!fs.existsSync(outputDir)) {
+              fs.mkdirSync(outputDir, { recursive: true });
+            }
+            
+            // 遍历处理每一个 Issue
+            for (const issue of issues) {
+              totalIssues++;
+            
+              // 关键过滤条件：仅处理仓库所有者创建的 Issue
+              // 检查Issue的创建者是否是仓库所有者
+              if (issue.user.login !== REPO_OWNER) {
+                console.log(`⏭️ 跳过非所有者创建的 Issue #${issue.number}: ${issue.title} (创建者: ${issue.user.login})`);
+                skippedIssues++;
+                // 跳过这个Issue，不生成博客文章
+                continue;  
+              }
+            
+              // 如果是 Pull Request 则跳过（PR 不是 Issue）
+              if (issue.pull_request) {
+                console.log(`⏭️ 跳过 Pull Request #${issue.number}: ${issue.title}`);
+                skippedIssues++;
+                continue;
+              }
+              
+              ownerIssues++;
+              
+              // 获取文章标题
+              const title = issue.title;
+              // 获取创建日期，格式化为 YYYY-MM-DD
+              const date = new Date(issue.created_at).toISOString().split('T')[0];
+              // 获取标签列表，用逗号分隔
+              const tags = issue.labels.map(l => l.name).join(', ');
+              
+              // 构建Hexo格式的Markdown文件内容（Front Matter + 正文）
+              const content = `---
+              # 文章标题
+              title: ${title}
+              # 文章发布日期
+              date: ${date} 
+              # 文章标签
+              tags: [${tags}]         
+              ---
+              # Issue的正文内容（如果没有则为空）
+              ${issue.body || ''}      
+              `;
+              
+              // 生成文件名：日期-标题.md（标题中的特殊字符替换为连字符）
+              const filename = `${date}-${title.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '-')}.md`;
+              // 拼接完整的文件路径
+              const filepath = path.join(outputDir, filename);
+              
+              // 将内容写入文件（UTF-8编码）
+              fs.writeFileSync(filepath, content, 'utf8');
+              // 在日志中输出生成的文件名，方便调试
+              console.log(`已生成: ${filename}`);
+            }
+            
+      # 步骤4：构建Hexo静态网站
+      - name: Build Hexo
+        run: |
+          # 全局安装 Hexo 命令行工具
+          npm install hexo-cli -g
+          # 安装项目依赖（根据 package.json）
+          npm install
+          # 生成静态 HTML 文件 
+          hexo generate              
+          
+      # 步骤5：部署到GitHub Pages
+      - name: Deploy to GitHub Pages
+        # 使用第三方部署Action
+        uses: peaceiris/actions-gh-pages@v3  
+        with:
+          # 使用自动提供的 GITHUB_TOKEN
+          github_token: ${{ secrets.GITHUB_TOKEN }} 
+          # 要发布的目录（Hexo默认输出目录）
+          publish_dir: ./public                      
