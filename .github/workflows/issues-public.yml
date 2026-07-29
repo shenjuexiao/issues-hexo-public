@@ -48,6 +48,8 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
+          
+      - name: 安装 Node.js & Hexo
         run: |
           npm install -g hexo-cli
 
