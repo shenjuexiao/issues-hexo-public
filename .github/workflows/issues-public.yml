@@ -18,7 +18,7 @@
 # 跨仓库使用 token: ${{ secrets.ISSUES_PUBLIC }}
 
 
-
+# workflow_dispatch:
 
 
 name: Issue To Hexo Blog Auto Build & Push
@@ -27,6 +27,7 @@ name: Issue To Hexo Blog Auto Build & Push
 on:
   issues:
     types: [opened, edited, renamed, deleted]
+  workflow_dispatch:
 
 # 运行环境
 jobs:
