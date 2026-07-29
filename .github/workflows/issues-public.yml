@@ -15,57 +15,125 @@
 # 将 Issues 转换成文章，日期-标题.md 到 ./source/_posts
 
 
-name: Deploy Hexo Blog from Issues
+name: Build Blog from Issues
 
 on:
   issues:
-    types: [opened, edited, deleted, labeled]
+    types: [opened, edited, deleted, labeled, unlabeled]
   schedule:
-    - cron: '0 */6 * * *'  # 每6小时触发一次
-  workflow_dispatch:       # 手动触发
+    - cron: '0 */6 * * *'  # 每6小时构建一次
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '强制重建所有文章'
+        type: boolean
+        default: false
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+      pages: write
+      id-token: write
     
     steps:
-    - name: Checkout source repository
+    # 1. 克隆源仓库（Hexo 模板）
+    - name: Checkout source repository (Hexo template)
       uses: actions/checkout@v4
       with:
-        repository: your-username/hexo-source-repo
-        path: hexo-source
-        token: ${{ secrets.GITHUB_TOKEN }}
+        repository: shenjuexiao/issues-shenjuexiao
+        path: ./
+        token: ${{ secrets.ISSUES_PUBLIC }}
+        fetch-depth: 0  # 获取完整历史，用于提交检测
     
+    # 2. 设置 Node.js
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: ./package-lock.json
     
-    - name: Install dependencies
-      working-directory: ./hexo-source
-      run: npm install
+    # 3. 安装 Hexo 依赖
+    - name: Install Hexo dependencies
+      working-directory: ./
+      run: npm ci  # 使用 ci 更可靠
     
-    - name: Fetch issues and convert to posts
+    # 4. 获取 Issues 并转换为 .md 文件
+    - name: Fetch and convert Issues to Markdown
       run: |
-        # 使用 GitHub CLI 获取所有 Issues
-        gh issue list --state all --limit 1000 --json number,title,body,labels,createdAt,updatedAt \
-          --repo your-username/your-blog-repo > issues.json
+        # 获取所有 Issues（包括已关闭的）
+        gh issue list --state all --limit 1000 \
+          --json number,title,body,labels,createdAt,updatedAt,state,comments \
+          --repo ${{ github.repository }} > issues.json
         
-        # 解析并生成 .md 文件
-        node ./scripts/convert-issues.js issues.json ./hexo-source/source/_posts/
+        # 安装 js-yaml 用于解析 Front Matter
+        npm install -g js-yaml
+        
+        # 执行转换脚本
+        node ./scripts/convert-issues-to-posts.js \
+          issues.json \
+          ./source/_posts/
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Generate Hexo static files
+    # 5. 将生成的 .md 文件推送到源仓库（存档）
+    - name: Push generated posts to source repository
       working-directory: ./hexo-source
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # 检查是否有变更
+        git add source/_posts/
+        if git diff --staged --quiet; then
+          echo "📝 No new posts to commit"
+        else
+          git commit -m "📝 Update posts from issues [skip ci]"
+          git push https://x-access-token:${{ secrets.PAT_FOR_SOURCE_REPO }}@github.com/your-username/hexo-source-repo.git main
+          echo "✅ Posts pushed to source repository"
+        fi
+      continue-on-error: true
+    
+    # 6. 生成 Hexo 静态文件
+    - name: Generate Hexo static site
+      working-directory: ./
       run: |
         npx hexo clean
         npx hexo generate
+      env:
+        NODE_ENV: production
     
-    - name: Deploy to GitHub Pages / 部署分支
+    # 7. 部署到博客仓库的 gh-pages 分支（使用 peaceiris/actions-gh-pages）
+    - name: Deploy to gh-pages
       uses: peaceiris/actions-gh-pages@v3
       with:
-        deploy_key: ${{ secrets.ACTIONS_DEPLOY_KEY }}
+        # 方式一：使用 deploy_key（推荐）
+        # deploy_key: ${{ secrets.ACTIONS_DEPLOY_KEY }}
+        deploy_key: ${{ secrets.ISSUES_PUBLIC }}
+        
+        # 方式二：使用 personal_token（备选）
+        # personal_token: ${{ secrets.PAT_FOR_SOURCE_REPO }}
+        
+        # 方式三：使用 github_token（仅限同一仓库）
+        # github_token: ${{ secrets.GITHUB_TOKEN }}
+        
         publish_branch: gh-pages
-        publish_dir: ./hexo-source/public
-        external_repository: your-username/your-blog-repo
+        publish_dir: ./public
+        external_repository: ${{ github.repository }}
+        commit_message: "🚀 Deploy blog from issues [skip ci]"
+        
+        # 可选：保留历史记录
+        keep_files: false
+        
+        # 可选：强制推送（覆盖）
+        force_orphan: false
+        
+        # 可选：自定义域名
+        # cname: blog.yourdomain.com
+        
+        # 可选：用户信息
+        user_name: 'github-actions[bot]'
+        user_email: 'github-actions[bot]@users.noreply.github.com'
