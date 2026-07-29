@@ -73,15 +73,15 @@ jobs:
         npm install -g js-yaml
         
         # 执行转换脚本
-        node ./scripts/convert-issues-to-posts.js \
+        node scripts/convert-issues-to-posts.js \
           issues.json \
-          ./source/_posts/
+          source/_posts/
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
     # 5. 将生成的 .md 文件推送到源仓库（存档）
     - name: Push generated posts to source repository
-      working-directory: ./hexo-source
+      working-directory: ./
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
