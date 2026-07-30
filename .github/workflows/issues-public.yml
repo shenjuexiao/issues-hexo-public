@@ -20,6 +20,24 @@
 
 # workflow_dispatch:
 
+# issues-public.yml
+# github.com/shenjuexiao
+# 20260729
+
+# https://github.com/flytam/blog/issues/27
+# issue 新增或者修改时触发工作流
+# 拉取 hexo 源文件
+# 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
+
+# 源仓库（shenjuexiao/issues-shenjuexiao）：存放 Hexo 主题、配置、依赖等源文件
+# 博客仓库（shenjuexiao/issues-public）：使用 Issues 作为文章存储，每个 Issue 就是一篇文章
+# 自动化构建：博客仓库通过 GitHub Actions（issues-public.yml），将 Issues 转换为 Hexo 文章（日期-标题.md），
+# 拉取源仓库的 Hexo，作为博客模板，生成静态页面到 gh-pages 分支 ./public，
+# 再将 Hexo 文章（日期-标题.md），推送到源仓库 main 分支 ./source/_posts
+# 部署本仓库使用 actions/deploy-pages
+# 部署其他仓库使用 peaceiris/actions-gh-pages
+# 编写 issues-public.yml 包含脚本解析 issue，输出日期-标题.md
+# 跨仓库使用 token: ${{ secrets.ISSUES_PUBLIC }}
 
 name: Issues to Hexo Blog
 
@@ -101,16 +119,18 @@ jobs:
             FILENAME="${DATE}-${SAFE_TITLE}.md"
             FILEPATH="../source-repo/source/_posts/$FILENAME"
             
-            # 创建文章内容
-            cat > "$FILEPATH" << EOF
----
-title: $TITLE
-date: $CREATED_AT
-issue_number: $NUMBER
-labels: [$LABELS]
----
-$BODY
-EOF
+            # 转义特殊字符
+            ESCAPED_TITLE=$(echo "$TITLE" | sed 's/"/\\"/g' | sed 's/`/\\`/g')
+            ESCAPED_BODY=$(echo "$BODY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed 's/`/\\`/g' | sed 's/\$/\\$/g')
+            
+            # 创建文章内容 - 使用 printf 替代 cat heredoc 避免 EOF 问题
+            printf '---\n' > "$FILEPATH"
+            printf 'title: "%s"\n' "$ESCAPED_TITLE" >> "$FILEPATH"
+            printf 'date: %s\n' "$CREATED_AT" >> "$FILEPATH"
+            printf 'issue_number: %s\n' "$NUMBER" >> "$FILEPATH"
+            printf 'labels: [%s]\n' "$LABELS" >> "$FILEPATH"
+            printf '---\n\n' >> "$FILEPATH"
+            printf '%s\n' "$BODY" >> "$FILEPATH"
             
             echo "Created post: $FILENAME"
           done
