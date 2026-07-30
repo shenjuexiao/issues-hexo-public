@@ -72,7 +72,6 @@ jobs:
           mkdir -p ../source-repo/source/_posts
           
           # 获取所有 issues（包括已关闭的）
-          # 如果指定 issue_number，只处理此 issue
           if [ -n "${{ github.event.inputs.issue_number }}" ]; then
             ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
             ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
@@ -84,11 +83,12 @@ jobs:
               "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100")
           fi
           
-          # 清理旧的文章文件（只保留与当前 issues 对应的文件）
-          echo "Cleaning up old post files..."
-          
-          # 创建临时文件来存储当前 issue 对应的文件名
+          # 创建临时文件来存储当前活跃 issue 对应的文件名
           TEMP_FILE_LIST=$(mktemp)
+          POSTS_DIR="../source-repo/source/_posts"
+          
+          # 确保 _posts 目录存在
+          mkdir -p "$POSTS_DIR"
           
           # 处理每个 issue
           echo "$ISSUES" | jq -c '.[]' | while read -r issue; do
@@ -108,18 +108,17 @@ jobs:
             
             # 生成文件名
             FILENAME="${DATE}-${SAFE_TITLE}.md"
-            FILEPATH="../source-repo/source/_posts/$FILENAME"
+            FILEPATH="$POSTS_DIR/$FILENAME"
             
-            # 记录当前生成的文件名
+            # 记录当前生成的文件名（所有 issues，不管状态）
             echo "$FILENAME" >> "$TEMP_FILE_LIST"
             
-            # 只处理 open 状态的 issue，closed 状态的 issue 不生成文章
+            # 只处理 open 状态的 issue
             if [ "$STATE" = "open" ]; then
-              # 转义标题中的特殊字符用于 YAML front matter
+              # 转义标题中的特殊字符
               ESCAPED_TITLE=$(echo "$TITLE" | sed 's/"/\\"/g')
               
-              # 处理标签：过滤掉特殊标签（如 no-post, draft 等）
-              # 可以自定义过滤规则
+              # 处理标签：过滤掉特殊标签
               TAGS=$(echo "$issue" | jq -r '.labels[].name' | grep -v "no-post" | grep -v "draft" | paste -sd ',' -)
               
               # 创建 markdown 文件
@@ -140,29 +139,33 @@ jobs:
                 echo "$BODY"
               } > "$FILEPATH"
               
-              echo "Created/Updated post: $FILENAME"
+              echo "✅ Created/Updated post: $FILENAME (Issue #$NUMBER - $STATE)"
             else
               # 如果 issue 是 closed 状态，删除对应的文章文件
               if [ -f "$FILEPATH" ]; then
                 rm "$FILEPATH"
-                echo "Removed closed issue post: $FILENAME"
+                echo "🗑️ Removed closed issue post: $FILENAME (Issue #$NUMBER - $STATE)"
+              else
+                echo "ℹ️ Closed issue #$NUMBER has no existing post file"
               fi
             fi
           done
           
-          # 删除所有不在当前 issues 列表中的旧文章文件
-          echo "Removing orphaned post files..."
-          cd ../source-repo/source/_posts
+          # 清理孤儿文件：删除不在当前 issues 列表中的旧文章
+          echo "🧹 Cleaning up orphaned post files..."
+          cd "$POSTS_DIR"
           
           # 遍历所有 .md 文件
           for file in *.md; do
             if [ -f "$file" ]; then
               # 检查文件是否在当前 issue 列表中
               if ! grep -Fxq "$file" "$TEMP_FILE_LIST"; then
-                # 检查文件是否包含 issue_number 字段，如果是则删除
+                # 检查文件是否包含 issue_number 字段（由这个工作流生成的）
                 if grep -q "^issue_number:" "$file"; then
                   rm "$file"
-                  echo "Removed orphaned post: $file"
+                  echo "🗑️ Removed orphaned post: $file"
+                else
+                  echo "ℹ️ Skipped non-generated file: $file"
                 fi
               fi
             fi
@@ -170,6 +173,8 @@ jobs:
           
           # 清理临时文件
           rm "$TEMP_FILE_LIST"
+          
+          echo "📊 Post cleanup completed"
           
       - name: Check if any posts exist
         id: check_posts
