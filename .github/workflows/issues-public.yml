@@ -12,8 +12,7 @@
 # 自动化构建：博客仓库通过 GitHub Actions（issues-public.yml），将 Issues 转换为 Hexo 文章（日期-标题.md），
 # 拉取源仓库的 Hexo，作为博客模板，生成静态页面到 gh-pages 分支 ./public，
 # 再将 Hexo 文章（日期-标题.md），推送到源仓库 main 分支 ./source/_posts
-# 部署本仓库使用 actions/deploy-pages
-# 部署其他仓库使用 peaceiris/actions-gh-pages
+# 部署仓库使用 peaceiris/actions-gh-pages
 # 编写 issues-public.yml 包含脚本解析 issue，输出日期-标题.md
 # 跨仓库使用 token: ${{ secrets.ISSUES_PUBLIC }}
 
@@ -38,6 +37,8 @@ jobs:
     permissions:
       contents: write
       issues: read
+      id-token: write
+      pages: write
     
     steps:
       - name: Checkout source repository
@@ -57,7 +58,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           
       - name: Install Hexo dependencies
         run: |
@@ -103,7 +104,7 @@ jobs:
             # 转义标题中的特殊字符（用于 YAML front matter）
             ESCAPED_TITLE=$(echo "$TITLE" | sed 's/"/\\"/g')
             
-            # 方法1：使用 echo 替代 printf（更兼容）
+            # 创建markdown文件
             {
               echo '---'
               echo "title: \"$ESCAPED_TITLE\""
@@ -134,10 +135,11 @@ jobs:
           
       - name: Deploy to gh-pages (current repository)
         if: steps.check_posts.outputs.post_count > 0
-        uses: actions/deploy-pages@v4
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          folder: source-repo/public
+          personal_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./source-repo/public
           
       - name: Deploy to gh-pages (other repository)
         if: steps.check_posts.outputs.post_count > 0
