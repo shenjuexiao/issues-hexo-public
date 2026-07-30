@@ -7,7 +7,7 @@
 # 拉取 hexo 源文件
 # 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
 
-# 源仓库（shenjuexiao/issues-shenjuexiao）：存放 Hexo 主题、配置等源文件
+# 源仓库（shenjuexiao/issues-shenjuexiao）：存放 Hexo 主题、配置、依赖等源文件
 # 博客仓库（shenjuexiao/issues-public）：使用 Issues 作为文章存储，每个 Issue 就是一篇文章
 # 自动化构建：博客仓库通过 GitHub Actions（issues-public.yml），将 Issues 转换为 Hexo 文章（日期-标题.md），
 # 拉取源仓库的 Hexo，作为博客模板，生成静态页面到 gh-pages 分支 ./public，
@@ -21,149 +21,144 @@
 # workflow_dispatch:
 
 
-name: Issue To Hexo Blog Auto Build & Push
+name: Issues to Hexo Blog
 
-# 触发条件：仓库 Issue 操作（新建/编辑/重命名/删除）
 on:
   issues:
-    types: [opened, edited, renamed, deleted]
+    types: [opened, edited, closed, reopened, labeled, unlabeled]
   workflow_dispatch:
+    inputs:
+      issue_number:
+        description: '指定要处理的 Issue 编号（留空则处理所有）'
+        required: false
+        default: ''
 
-# 运行环境
 jobs:
-  build-blog:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 基础环境准备
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: 配置 Git 全局信息
-        run: |
-          git config --global user.name "GitHub Actions Bot"
-          git config --global user.email "actions@github.com"
-
-      - name: 安装 Node.js & Hexo
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          
-      - name: 安装 Node.js & Hexo
-        run: |
-          npm install -g hexo-cli
-
-      - name: 拉取 Hexo 源仓库模板 (shenjuexiao/issues-shenjuexiao)
-        run: |
-          git clone https://${{ secrets.ISSUES_PUBLIC }}@github.com/shenjuexiao/issues-shenjuexiao.git hexo-source
-          cd hexo-source
-          git checkout main
-
-      - name: 解析 Issue 内容，生成 Hexo Markdown 博文
-        id: parse_issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CROSS_TOKEN: ${{ secrets.ISSUES_PUBLIC }}
-        run: |
-          # 安装 gh cli 工具读取 issue 数据
-          npm install -g @githubcli/cli
-          gh auth login --with-token $GH_TOKEN
-
-          # 获取当前操作的 Issue 基础信息
-          ISSUE_NUM=${{ github.event.issue.number }}
-          ISSUE_TITLE=${{ github.event.issue.title }}
-          ISSUE_BODY=$(gh issue view $ISSUE_NUM --json body -q .body)
-          ISSUE_CREATED_AT=${{ github.event.issue.created_at }}
-          ISSUE_LABELS=$(gh issue view $ISSUE_NUM --json labels -q '.labels | map(.name) | join(",")')
-
-          # 格式化文件名：YYYY-MM-DD-转义标题.md
-          POST_DATE=$(echo $ISSUE_CREATED_AT | cut -d'T' -f1)
-          # 标题去除特殊字符，避免文件路径异常
-          SAFE_TITLE=$(echo "$ISSUE_TITLE" | sed 's/[\/:*?"<>| ]/-/g' | sed 's/-\+/-/g')
-          POST_FILE_NAME="${POST_DATE}-${SAFE_TITLE}.md"
-          POST_SAVE_PATH="./hexo-source/source/_posts/${POST_FILE_NAME}"
-
-          # 生成 Hexo Front-Matter 头部
-          cat > "$POST_SAVE_PATH" << EOF
----
-title: "$ISSUE_TITLE"
-date: $ISSUE_CREATED_AT
-tags: [$ISSUE_LABELS]
----
-$ISSUE_BODY
-EOF
-
-          # 输出变量给后续步骤使用
-          echo "POST_FILE_NAME=$POST_FILE_NAME" >> $GITHUB_ENV
-          echo "POST_SAVE_PATH=$POST_SAVE_PATH" >> $GITHUB_ENV
-
-      - name: 推送生成的 MD 博文至源仓库 main 分支
-        run: |
-          cd hexo-source
-          git add source/_posts/${{ env.POST_FILE_NAME }}
-          # 判断是否有修改，无修改跳过提交
-          if git diff --cached --quiet; then
-            echo "博文无变更，跳过推送"
-          else
-            git commit -m "Auto sync issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}"
-            git push https://${{ secrets.ISSUES_PUBLIC }}@github.com/shenjuexiao/issues-shenjuexiao.git main
-          fi
-
-      - name: Hexo 生成静态页面
-        run: |
-          cd hexo-source
-          npm install
-          hexo clean
-          hexo generate
-
-      - name: 部署静态页面至当前仓库 gh-pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./hexo-source/public
-          publish_branch: gh-pages
-          cname: # 此处填写自定义域名，无则留空
-          git push --force https://x-access-token:${{ secrets.ISSUES_PUBLIC }}@github.com/${{ env.SOURCE_REPO }}.git main:gh-pages
-          echo "Deployed to gh-pages branch"
-
-  # 如果源仓库启用了 Pages，使用此 job 部署
-  deploy-pages:
-    needs: build
-    if: github.repository == 'shenjuexiao/issues-shenjuexiao'
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
-  # 部署到其他仓库的示例（如果需要）
-  deploy-other:
-    needs: build
-    if: github.repository != 'shenjuexiao/issues-shenjuexiao'
+  build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: read
+    
     steps:
-      - name: Checkout built site
+      - name: Checkout source repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: gh-pages
+          repository: shenjuexiao/issues-shenjuexiao
           token: ${{ secrets.ISSUES_PUBLIC }}
-          path: built-site
-      
-      - name: Deploy to other repository
+          path: source-repo
+          
+      - name: Checkout blog repository (for issues)
+        uses: actions/checkout@v4
+        with:
+          repository: shenjuexiao/issues-public
+          token: ${{ secrets.ISSUES_PUBLIC }}
+          path: blog-repo
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install Hexo dependencies
+        run: |
+          cd source-repo
+          npm install
+          
+      - name: Fetch and convert issues to markdown
+        run: |
+          cd blog-repo
+          mkdir -p ../source-repo/source/_posts
+          
+          # 获取所有 open 状态的 issues
+          ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_PUBLIC }}" \
+            "https://api.github.com/repos/shenjuexiao/issues-public/issues?state=open&per_page=100")
+          
+          # 如果指定了 issue_number，则只处理该 issue
+          if [ -n "${{ github.event.inputs.issue_number }}" ]; then
+            ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
+            ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_PUBLIC }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-public/issues/$ISSUE_NUMBER")
+            ISSUES="[$ISSUE]"
+          fi
+          
+          # 处理每个 issue
+          echo "$ISSUES" | jq -c '.[]' | while read -r issue; do
+            # 提取信息
+            TITLE=$(echo "$issue" | jq -r '.title')
+            NUMBER=$(echo "$issue" | jq -r '.number')
+            CREATED_AT=$(echo "$issue" | jq -r '.created_at')
+            BODY=$(echo "$issue" | jq -r '.body')
+            LABELS=$(echo "$issue" | jq -r '.labels[].name' | paste -sd ',' -)
+            
+            # 清理标题作为文件名
+            SAFE_TITLE=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
+            
+            # 格式化日期（YYYY-MM-DD）
+            DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
+            
+            # 生成文件名
+            FILENAME="${DATE}-${SAFE_TITLE}.md"
+            FILEPATH="../source-repo/source/_posts/$FILENAME"
+            
+            # 创建文章内容
+            cat > "$FILEPATH" << EOF
+---
+title: $TITLE
+date: $CREATED_AT
+issue_number: $NUMBER
+labels: [$LABELS]
+---
+$BODY
+EOF
+            
+            echo "Created post: $FILENAME"
+          done
+          
+      - name: Check if any posts were created
+        id: check_posts
+        run: |
+          POST_COUNT=$(ls -1 source-repo/source/_posts/*.md 2>/dev/null | wc -l)
+          echo "post_count=$POST_COUNT" >> $GITHUB_OUTPUT
+          echo "Found $POST_COUNT posts"
+          
+      - name: Generate Hexo static files
+        if: steps.check_posts.outputs.post_count > 0
+        run: |
+          cd source-repo
+          npx hexo clean
+          npx hexo generate
+          
+      - name: Deploy to gh-pages (current repository)
+        if: steps.check_posts.outputs.post_count > 0
+        uses: actions/deploy-pages@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          folder: source-repo/public
+          
+      - name: Deploy to gh-pages (other repository)
+        if: steps.check_posts.outputs.post_count > 0
         uses: peaceiris/actions-gh-pages@v4
         with:
-          github_token: ${{ secrets.ISSUES_PUBLIC }}
-          publish_dir: ./built-site
+          personal_token: ${{ secrets.ISSUES_PUBLIC }}
+          external_repository: shenjuexiao/issues-public
           publish_branch: gh-pages
-          destination_dir: ./public
-          force_orphan: true
+          publish_dir: ./source-repo/public
+          
+      - name: Push markdown files to source repository
+        if: steps.check_posts.outputs.post_count > 0
+        run: |
+          cd source-repo
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          # 添加新文章到 git
+          git add source/_posts/*.md
+          
+          # 检查是否有变更
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update posts from issues [skip ci]"
+            git push https://x-access-token:${{ secrets.ISSUES_PUBLIC }}@github.com/shenjuexiao/issues-shenjuexiao.git main
+          fi
