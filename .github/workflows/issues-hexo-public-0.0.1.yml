@@ -7,7 +7,8 @@
 # 拉取 hexo 源文件
 # 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
 
-# 20260730-v0.0.0
+# v0.0.0-20260730
+# chat.deepseek.com/a/chat/s/7301aff4-6217-425d-ad64-30636fa19e73
 # 源仓库（shenjuexiao/issues-hexo-source）：存放 Hexo 主题、配置、依赖等源文件
 # 博客仓库（shenjuexiao/issues-hexo-public）：使用 Issues 作为文章存储，每个 Issue 就是一篇文章
 # 自动化构建：博客仓库通过 GitHub Actions（issues-hexo-public.yml），将 Issues 转换为 Hexo 文章（日期-标题.md），
@@ -17,7 +18,8 @@
 # 编写 issues-hexo-public.yml 包含脚本解析 issue，输出日期-标题.md
 # 跨仓库使用 token: ${{ secrets.ISSUES_HEXO }}
 
-# 20260731-v0.0.1
+# v0.0.1-20260731
+# chat.deepseek.com/a/chat/s/7096b7e4-12f4-4f1a-94fa-dcc9e7c11adb
 # 支持 Issue 编辑（edited）：添加 updated 字段到 front matter，重新生成 markdown 文件
 # 支持 Issue 关闭（closed）： draft: true 添加到 front matter，使文章变为草稿状态
 # 支持 Issue 重新打开（reopened）：自动移除 draft 状态，重新发布文章
