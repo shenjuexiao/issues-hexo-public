@@ -1,4 +1,4 @@
-# issues-hexo-public.yml
+# issues-hexo-public-0.0.1.yml
 # github.com/shenjuexiao
 # 20260730
 
@@ -7,6 +7,7 @@
 # 拉取 hexo 源文件
 # 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
 
+# 20260730-v0.0.0
 # 源仓库（shenjuexiao/issues-hexo-source）：存放 Hexo 主题、配置、依赖等源文件
 # 博客仓库（shenjuexiao/issues-hexo-public）：使用 Issues 作为文章存储，每个 Issue 就是一篇文章
 # 自动化构建：博客仓库通过 GitHub Actions（issues-hexo-public.yml），将 Issues 转换为 Hexo 文章（日期-标题.md），
@@ -15,6 +16,13 @@
 # 部署仓库使用 peaceiris/actions-gh-pages
 # 编写 issues-hexo-public.yml 包含脚本解析 issue，输出日期-标题.md
 # 跨仓库使用 token: ${{ secrets.ISSUES_HEXO }}
+
+# 20260731-v0.0.1
+# 支持 Issue 编辑（edited）：添加 updated 字段到 front matter，重新生成 markdown 文件
+# 支持 Issue 关闭（closed）： draft: true 添加到 front matter，使文章变为草稿状态
+# 支持 Issue 重新打开（reopened）：自动移除 draft 状态，重新发布文章
+# 支持 Issue 标签变更（labeled, unlabeled）：从 GitHub API 获取最新标签，更新 front matter 中的 labels 字段
+# 支持 Issue 删除（deleted）：在触发器中添加 deleted 类型，清理孤立的帖子文件
 
 name: Issues to Hexo Blog
 
@@ -66,12 +74,12 @@ jobs:
           cd source-repo
           npm install
           
-      - name: Fetch and convert issues to markdown
+      - name: Process issues
         run: |
           cd blog-repo
           mkdir -p ../source-repo/source/_posts
           
-          # 获取所有 issues（包括 closed 状态）
+          # 获取所有 issues（包括关闭的）
           ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
             "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100")
           
@@ -83,25 +91,19 @@ jobs:
             ISSUES="[$ISSUE]"
           fi
           
-          # 获取当前所有已存在的文章列表（用于检测删除）
+          # 获取当前所有已存在的文章，用于清理孤立的帖子
           EXISTING_POSTS=$(ls -1 ../source-repo/source/_posts/*.md 2>/dev/null || echo "")
-          
-          # 创建一个临时文件来跟踪处理的 issue 编号
-          PROCESSED_ISSUES=$(mktemp)
           
           # 处理每个 issue
           echo "$ISSUES" | jq -c '.[]' | while read -r issue; do
             # 提取信息
             TITLE=$(echo "$issue" | jq -r '.title')
             NUMBER=$(echo "$issue" | jq -r '.number')
-            STATE=$(echo "$issue" | jq -r '.state')
             CREATED_AT=$(echo "$issue" | jq -r '.created_at')
             UPDATED_AT=$(echo "$issue" | jq -r '.updated_at')
-            BODY=$(echo "$issue" | jq -r '.body // ""')
+            BODY=$(echo "$issue" | jq -r '.body')
+            STATE=$(echo "$issue" | jq -r '.state')
             LABELS=$(echo "$issue" | jq -r '.labels[].name' | paste -sd ',' -)
-            
-            # 记录已处理的 issue 编号
-            echo "$NUMBER" >> "$PROCESSED_ISSUES"
             
             # 清理标题作为文件名
             SAFE_TITLE=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
@@ -113,18 +115,15 @@ jobs:
             FILENAME="${DATE}-${SAFE_TITLE}.md"
             FILEPATH="../source-repo/source/_posts/$FILENAME"
             
-            # 如果 issue 是 closed 状态，删除对应的文章
-            if [ "$STATE" = "closed" ]; then
-              if [ -f "$FILEPATH" ]; then
-                rm -f "$FILEPATH"
-                echo "Removed post: $FILENAME (issue closed)"
-              fi
-              continue
-            fi
-            
             # 转义标题中的特殊字符用于 YAML front matter
             ESCAPED_TITLE=$(echo "$TITLE" | sed 's/"/\\"/g')
-            ESCAPED_BODY=$(echo "$BODY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+            
+            # 处理 draft 状态（基于 issue 状态）
+            if [ "$STATE" = "closed" ]; then
+              DRAFT_STATUS="draft: true"
+            else
+              DRAFT_STATUS="draft: false"
+            fi
             
             # 创建或更新 markdown 文件
             {
@@ -133,39 +132,36 @@ jobs:
               echo "date: $CREATED_AT"
               echo "updated: $UPDATED_AT"
               echo "issue_number: $NUMBER"
-              if [ -n "$LABELS" ]; then
-                echo "labels: [$LABELS]"
-              else
-                echo "labels: []"
-              fi
+              echo "labels: [$LABELS]"
               echo "state: $STATE"
+              echo "$DRAFT_STATUS"
               echo '---'
               echo ''
               echo "$BODY"
             } > "$FILEPATH"
             
-            echo "Created/Updated post: $FILENAME (issue #$NUMBER, state: $STATE)"
+            echo "Processed post: $FILENAME (state: $STATE)"
           done
           
-          # 检查并删除不再存在的 issue 对应的文章
-          if [ -n "$EXISTING_POSTS" ]; then
-            for post in $EXISTING_POSTS; do
-              # 从文件中读取 issue_number
-              if [ -f "$post" ]; then
-                ISSUE_NUM=$(grep "^issue_number:" "$post" | awk '{print $2}')
-                if [ -n "$ISSUE_NUM" ]; then
-                  # 检查这个 issue 是否还在处理列表中
-                  if ! grep -q "^$ISSUE_NUM$" "$PROCESSED_ISSUES"; then
-                    rm -f "$post"
-                    echo "Removed orphaned post: $(basename "$post") (issue #$ISSUE_NUM no longer exists)"
-                  fi
-                fi
-              fi
-            done
-          fi
+      - name: Clean orphaned posts (for deleted issues)
+        run: |
+          cd source-repo/source/_posts
           
-          # 清理临时文件
-          rm -f "$PROCESSED_ISSUES"
+          # 获取所有活跃的 issue 编号
+          ACTIVE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+            "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100" | \
+            jq -r '.[].number')
+          
+          # 检查每个 post 文件，如果对应的 issue 不存在则删除
+          for file in *.md; do
+            if [ -f "$file" ]; then
+              ISSUE_NUM=$(grep "^issue_number:" "$file" | awk '{print $2}')
+              if [ -n "$ISSUE_NUM" ] && ! echo "$ACTIVE_ISSUES" | grep -q "^$ISSUE_NUM$"; then
+                echo "Removing orphaned post: $file (issue #$ISSUE_NUM not found)"
+                rm -f "$file"
+              fi
+            fi
+          done
           
       - name: Check if any posts exist
         id: check_posts
@@ -199,25 +195,19 @@ jobs:
           publish_dir: ./source-repo/public
           
       - name: Push markdown files to source repository
-        if: always()  # 即使没有文章也要执行，确保删除操作被推送
+        if: steps.check_posts.outputs.post_count > 0
         run: |
           cd source-repo
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           
-          # 添加所有变更（包括删除）
-          git add -A source/_posts/
+          # 添加所有变更（包括删除的文件）
+          git add -A
           
           # 检查是否有变更
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            # 生成提交信息
-            if [ -n "${{ github.event.inputs.issue_number }}" ]; then
-              COMMIT_MSG="Update issue #${{ github.event.inputs.issue_number }} [skip ci]"
-            else
-              COMMIT_MSG="Update posts from issues (event: ${{ github.event.action }}) [skip ci]"
-            fi
-            git commit -m "$COMMIT_MSG"
+            git commit -m "Update posts from issues [skip ci]"
             git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
           fi
