@@ -77,150 +77,7 @@ jobs:
           cd source-repo
           npm install
           
-      - name: Fetch and convert issues to markdown
-        run: |
-          cd blog-repo
-          mkdir -p ../source-repo/source/_posts
-          
-          # 获取所有 issues（包括关闭的）- 分页处理
-          PAGE=1
-          ALL_ISSUES=""
-          while true; do
-            PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
-            
-            COUNT=$(echo "$PAGE_ISSUES" | jq '. | length')
-            if [ "$COUNT" -eq 0 ]; then
-              break
-            fi
-            
-            if [ -z "$ALL_ISSUES" ]; then
-              ALL_ISSUES="$PAGE_ISSUES"
-            else
-              ALL_ISSUES=$(echo "$ALL_ISSUES $PAGE_ISSUES" | jq -s 'add')
-            fi
-            PAGE=$((PAGE + 1))
-          done
-          
-          # 如果指定 issue_number，只处理此 issue
-          if [ -n "${{ github.event.inputs.issue_number }}" ]; then
-            ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
-            ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues/$ISSUE_NUMBER")
-            ALL_ISSUES="[$ISSUE]"
-          fi
-          
-          # 存储当前处理的 issue numbers，用于后续清理
-          PROCESSED_ISSUES=""
-          
-          # 处理每个 issue
-          echo "$ALL_ISSUES" | jq -c '.[]' | while read -r issue; do
-            # 提取信息
-            TITLE=$(echo "$issue" | jq -r '.title')
-            NUMBER=$(echo "$issue" | jq -r '.number')
-            STATE=$(echo "$issue" | jq -r '.state')
-            CREATED_AT=$(echo "$issue" | jq -r '.created_at')
-            UPDATED_AT=$(echo "$issue" | jq -r '.updated_at')
-            BODY=$(echo "$issue" | jq -r '.body // ""')
-            LABELS=$(echo "$issue" | jq -r '.labels[].name' | paste -sd ',' -)
-            
-            # 记录处理的 issue
-            echo "$NUMBER" >> /tmp/processed_issues.txt
-            
-            # 清理标题作为文件名
-            SAFE_TITLE=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
-            
-            # 格式化日期 YYYY-MM-DD
-            DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
-            
-            # 生成文件名
-            FILENAME="${DATE}-${SAFE_TITLE}.md"
-            FILEPATH="../source-repo/source/_posts/$FILENAME"
-            
-            # 转义标题中的特殊字符用于 YAML front matter
-            ESCAPED_TITLE=$(echo "$TITLE" | sed 's/"/\\"/g')
-            
-            # 处理 body 内容，转义可能导致 YAML 解析问题的特殊字符
-            ESCAPED_BODY=$(echo "$BODY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
-            
-            # 判断是否草稿（closed 状态）
-            DRAFT="false"
-            if [ "$STATE" = "closed" ]; then
-              DRAFT="true"
-            fi
-            
-            # 创建 markdown 文件
-            {
-              echo '---'
-              echo "title: \"$ESCAPED_TITLE\""
-              echo "date: $CREATED_AT"
-              echo "updated: $UPDATED_AT"
-              echo "issue_number: $NUMBER"
-              if [ -n "$LABELS" ]; then
-                echo "labels: [$LABELS]"
-              else
-                echo "labels: []"
-              fi
-              echo "draft: $DRAFT"
-              echo '---'
-              echo ''
-              echo "$ESCAPED_BODY"
-            } > "$FILEPATH"
-            
-            echo "Created/Updated post: $FILENAME (draft: $DRAFT)"
-          done
-          
-      - name: Check if any posts were created
-        id: check_posts
-        run: |
-          POST_COUNT=$(find source-repo/source/_posts -name "*.md" -type f 2>/dev/null | wc -l)
-          echo "post_count=$POST_COUNT" >> $GITHUB_OUTPUT
-          echo "Found $POST_COUNT posts"
-          
-      - name: Generate Hexo static files
-        if: steps.check_posts.outputs.post_count > 0
-        run: |
-          cd source-repo
-          npx hexo clean
-          npx hexo generate
-          
-      - name: Deploy to gh-pages (current repository)
-        if: steps.check_posts.outputs.post_count > 0
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          personal_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: ./source-repo/public
-          
-      - name: Deploy to gh-pages (other repository)
-        if: steps.check_posts.outputs.post_count > 0
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          personal_token: ${{ secrets.ISSUES_HEXO }}
-          external_repository: shenjuexiao/issues-hexo-public
-          publish_branch: gh-pages
-          publish_dir: ./source-repo/public
-          
-      - name: Push markdown files to source repository
-        if: steps.check_posts.outputs.post_count > 0
-        run: |
-          cd source-repo
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          
-          # 添加所有文章到 git（包括删除的文件）
-          git add source/_posts/
-          
-          # 检查是否有变更
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update posts from issues [skip ci]"
-            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
-          fi
-          
-      - name: Clean up orphaned and duplicate post files
-        if: always() && steps.check_posts.outputs.post_count > 0
+      - name: Clean up orphaned and duplicate post files BEFORE generation
         run: |
           cd source-repo
           
@@ -253,7 +110,6 @@ jobs:
           fi
           
           # 为每个 issue 生成预期的文件名
-          declare -A EXPECTED_FILES
           echo "$ISSUE_DATA" | jq -c '.[]' | while read -r issue; do
             NUMBER=$(echo "$issue" | jq -r '.number')
             TITLE=$(echo "$issue" | jq -r '.title')
@@ -306,3 +162,138 @@ jobs:
             git commit -m "Remove orphaned and duplicate post files [skip ci]"
             git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
           fi
+          
+      - name: Fetch and convert issues to markdown
+        run: |
+          cd blog-repo
+          mkdir -p ../source-repo/source/_posts
+          
+          # 获取所有 issues（包括关闭的）- 分页处理
+          PAGE=1
+          ALL_ISSUES=""
+          while true; do
+            PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
+            
+            COUNT=$(echo "$PAGE_ISSUES" | jq '. | length')
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+            
+            if [ -z "$ALL_ISSUES" ]; then
+              ALL_ISSUES="$PAGE_ISSUES"
+            else
+              ALL_ISSUES=$(echo "$ALL_ISSUES $PAGE_ISSUES" | jq -s 'add')
+            fi
+            PAGE=$((PAGE + 1))
+          done
+          
+          # 如果指定 issue_number，只处理此 issue
+          if [ -n "${{ github.event.inputs.issue_number }}" ]; then
+            ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
+            ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues/$ISSUE_NUMBER")
+            ALL_ISSUES="[$ISSUE]"
+          fi
+          
+          # 处理每个 issue
+          echo "$ALL_ISSUES" | jq -c '.[]' | while read -r issue; do
+            # 提取信息
+            TITLE=$(echo "$issue" | jq -r '.title')
+            NUMBER=$(echo "$issue" | jq -r '.number')
+            STATE=$(echo "$issue" | jq -r '.state')
+            CREATED_AT=$(echo "$issue" | jq -r '.created_at')
+            UPDATED_AT=$(echo "$issue" | jq -r '.updated_at')
+            BODY=$(echo "$issue" | jq -r '.body // ""')
+            LABELS=$(echo "$issue" | jq -r '.labels[].name' | paste -sd ',' -)
+            
+            # 清理标题作为文件名
+            SAFE_TITLE=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
+            
+            # 格式化日期 YYYY-MM-DD
+            DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
+            
+            # 生成文件名
+            FILENAME="${DATE}-${SAFE_TITLE}.md"
+            FILEPATH="../source-repo/source/_posts/$FILENAME"
+            
+            # 转义标题中的特殊字符用于 YAML front matter
+            ESCAPED_TITLE=$(echo "$TITLE" | sed 's/"/\\"/g')
+            
+            # 处理 body 内容，转义可能导致 YAML 解析问题的特殊字符
+            ESCAPED_BODY=$(echo "$BODY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+            
+            # 判断是否草稿（closed 状态）
+            DRAFT="false"
+            if [ "$STATE" = "closed" ]; then
+              DRAFT="true"
+            fi
+            
+            # 创建 markdown 文件
+            {
+              echo '---'
+              echo "title: \"$ESCAPED_TITLE\""
+              echo "date: $CREATED_AT"
+              echo "updated: $UPDATED_AT"
+              echo "issue_number: $NUMBER"
+              if [ -n "$LABELS" ]; then
+                echo "labels: [$LABELS]"
+              else
+                echo "labels: []"
+              fi
+              echo "draft: $DRAFT"
+              echo '---'
+              echo ''
+              echo "$ESCAPED_BODY"
+            } > "$FILEPATH"
+            
+            echo "Created/Updated post: $FILENAME (draft: $DRAFT)"
+          done
+          
+      - name: Push markdown files to source repository
+        run: |
+          cd source-repo
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          # 添加所有文章到 git（包括新文件和删除的文件）
+          git add source/_posts/
+          
+          # 检查是否有变更
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update posts from issues [skip ci]"
+            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
+          fi
+          
+      - name: Check if any posts exist
+        id: check_posts
+        run: |
+          POST_COUNT=$(find source-repo/source/_posts -name "*.md" -type f 2>/dev/null | wc -l)
+          echo "post_count=$POST_COUNT" >> $GITHUB_OUTPUT
+          echo "Found $POST_COUNT posts"
+          
+      - name: Generate Hexo static files
+        if: steps.check_posts.outputs.post_count > 0
+        run: |
+          cd source-repo
+          npx hexo clean
+          npx hexo generate
+          
+      - name: Deploy to gh-pages (current repository)
+        if: steps.check_posts.outputs.post_count > 0
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./source-repo/public
+          
+      - name: Deploy to gh-pages (other repository)
+        if: steps.check_posts.outputs.post_count > 0
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.ISSUES_HEXO }}
+          external_repository: shenjuexiao/issues-hexo-public
+          publish_branch: gh-pages
+          publish_dir: ./source-repo/public
