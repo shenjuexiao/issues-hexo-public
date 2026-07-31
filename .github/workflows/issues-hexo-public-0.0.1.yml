@@ -23,6 +23,9 @@
 # 支持 Issue 重新打开（reopened）：自动移除 draft 状态，重新发布文章
 # 支持 Issue 标签变更（labeled, unlabeled）：从 GitHub API 获取最新标签，更新 front matter 中的 labels 字段
 # 支持 Issue 删除（deleted）：在触发器中添加 deleted 类型，清理孤立的帖子文件
+# 分页获取所有 issues
+# 当 issue 被删除或重命名时，自动清理对应的 .md 文件
+# 正确提交删除操作到 Git 仓库
 
 name: Issues to Hexo Blog
 
@@ -79,9 +82,6 @@ jobs:
           cd blog-repo
           mkdir -p ../source-repo/source/_posts
           
-          # 清理现有的 _posts 目录（可选，避免残留文件）
-          # rm -rf ../source-repo/source/_posts/*.md
-          
           # 获取所有 issues（包括关闭的）- 分页处理
           PAGE=1
           ALL_ISSUES=""
@@ -110,6 +110,9 @@ jobs:
             ALL_ISSUES="[$ISSUE]"
           fi
           
+          # 存储当前处理的 issue numbers，用于后续清理
+          PROCESSED_ISSUES=""
+          
           # 处理每个 issue
           echo "$ALL_ISSUES" | jq -c '.[]' | while read -r issue; do
             # 提取信息
@@ -120,6 +123,9 @@ jobs:
             UPDATED_AT=$(echo "$issue" | jq -r '.updated_at')
             BODY=$(echo "$issue" | jq -r '.body // ""')
             LABELS=$(echo "$issue" | jq -r '.labels[].name' | paste -sd ',' -)
+            
+            # 记录处理的 issue
+            echo "$NUMBER" >> /tmp/processed_issues.txt
             
             # 清理标题作为文件名
             SAFE_TITLE=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
@@ -213,14 +219,14 @@ jobs:
             git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
           fi
           
-      - name: Clean up orphaned post files
+      - name: Clean up orphaned and duplicate post files
         if: always() && steps.check_posts.outputs.post_count > 0
         run: |
           cd source-repo
           
-          # 获取所有现有的 issue 编号（分页处理）
+          # 获取所有现有的 issue 信息（包括编号和标题）
           PAGE=1
-          ISSUE_NUMBERS=""
+          ISSUE_DATA=""
           while true; do
             PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
               "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
@@ -230,36 +236,73 @@ jobs:
               break
             fi
             
-            # 提取 issue numbers
-            PAGE_NUMBERS=$(echo "$PAGE_ISSUES" | jq -r '.[].number')
-            ISSUE_NUMBERS="$ISSUE_NUMBERS $PAGE_NUMBERS"
+            if [ -z "$ISSUE_DATA" ]; then
+              ISSUE_DATA="$PAGE_ISSUES"
+            else
+              ISSUE_DATA=$(echo "$ISSUE_DATA $PAGE_ISSUES" | jq -s 'add')
+            fi
             PAGE=$((PAGE + 1))
           done
           
-          # 如果指定了 issue_number，只检查该 issue
+          # 如果指定了 issue_number，只处理该 issue
           if [ -n "${{ github.event.inputs.issue_number }}" ]; then
-            ISSUE_NUMBERS="${{ github.event.inputs.issue_number }}"
+            ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
+            ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues/$ISSUE_NUMBER")
+            ISSUE_DATA="[$ISSUE]"
           fi
+          
+          # 为每个 issue 生成预期的文件名
+          declare -A EXPECTED_FILES
+          echo "$ISSUE_DATA" | jq -c '.[]' | while read -r issue; do
+            NUMBER=$(echo "$issue" | jq -r '.number')
+            TITLE=$(echo "$issue" | jq -r '.title')
+            CREATED_AT=$(echo "$issue" | jq -r '.created_at')
+            
+            SAFE_TITLE=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
+            DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
+            EXPECTED_FILENAME="${DATE}-${SAFE_TITLE}.md"
+            
+            # 存储期望的文件名
+            echo "$NUMBER:$EXPECTED_FILENAME" >> /tmp/expected_files.txt
+          done
           
           # 检查 _posts 目录中的每个文件
           for file in source/_posts/*.md; do
             if [ -f "$file" ]; then
+              FILENAME=$(basename "$file")
+              
               # 提取 issue_number
               ISSUE_NUM=$(grep "^issue_number:" "$file" | awk '{print $2}')
+              
               if [ -n "$ISSUE_NUM" ]; then
-                # 如果 issue_number 不在当前列表中，删除文件
-                if ! echo "$ISSUE_NUMBERS" | grep -q "\b$ISSUE_NUM\b"; then
+                # 检查这个 issue 是否还存在
+                ISSUE_EXISTS=$(echo "$ISSUE_DATA" | jq -r ".[] | select(.number == $ISSUE_NUM) | .number")
+                
+                if [ -z "$ISSUE_EXISTS" ]; then
+                  # issue 已被删除
                   echo "Removing orphaned post: $file (issue #$ISSUE_NUM not found)"
                   git rm -f "$file"
+                else
+                  # 检查文件名是否匹配期望的文件名
+                  EXPECTED=$(grep "^$ISSUE_NUM:" /tmp/expected_files.txt | cut -d':' -f2)
+                  if [ -n "$EXPECTED" ] && [ "$FILENAME" != "$EXPECTED" ]; then
+                    # 文件名不匹配（标题已更改），删除旧文件
+                    echo "Removing old file: $file (expected: $EXPECTED, issue #$ISSUE_NUM title changed)"
+                    git rm -f "$file"
+                  fi
                 fi
+              else
+                # 文件中没有 issue_number，可能是手动创建的，保留
+                echo "Skipping file without issue_number: $file"
               fi
             fi
           done
           
           # 提交删除操作
           if git diff --staged --quiet; then
-            echo "No orphaned files to remove"
+            echo "No orphaned or duplicate files to remove"
           else
-            git commit -m "Remove orphaned post files [skip ci]"
+            git commit -m "Remove orphaned and duplicate post files [skip ci]"
             git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
           fi
