@@ -32,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: '指定要处理的 Issue 编号，留空则处理所有'
+        description: '指定 Issue 编号，留空默认所有'
         required: false
         default: ''
 
@@ -74,10 +74,13 @@ jobs:
           cd source-repo
           npm install
           
-      - name: Process issues
+      - name: Fetch and convert issues to markdown
         run: |
           cd blog-repo
           mkdir -p ../source-repo/source/_posts
+          
+          # 清理现有的 _posts 目录（可选，避免残留文件）
+          # rm -rf ../source-repo/source/_posts/*.md
           
           # 获取所有 issues（包括关闭的）
           ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
@@ -91,18 +94,15 @@ jobs:
             ISSUES="[$ISSUE]"
           fi
           
-          # 获取当前所有已存在的文章，用于清理孤立的帖子
-          EXISTING_POSTS=$(ls -1 ../source-repo/source/_posts/*.md 2>/dev/null || echo "")
-          
           # 处理每个 issue
           echo "$ISSUES" | jq -c '.[]' | while read -r issue; do
             # 提取信息
             TITLE=$(echo "$issue" | jq -r '.title')
             NUMBER=$(echo "$issue" | jq -r '.number')
+            STATE=$(echo "$issue" | jq -r '.state')
             CREATED_AT=$(echo "$issue" | jq -r '.created_at')
             UPDATED_AT=$(echo "$issue" | jq -r '.updated_at')
-            BODY=$(echo "$issue" | jq -r '.body')
-            STATE=$(echo "$issue" | jq -r '.state')
+            BODY=$(echo "$issue" | jq -r '.body // ""')
             LABELS=$(echo "$issue" | jq -r '.labels[].name' | paste -sd ',' -)
             
             # 清理标题作为文件名
@@ -118,55 +118,40 @@ jobs:
             # 转义标题中的特殊字符用于 YAML front matter
             ESCAPED_TITLE=$(echo "$TITLE" | sed 's/"/\\"/g')
             
-            # 处理 draft 状态（基于 issue 状态）
+            # 处理 body 内容，转义可能导致 YAML 解析问题的特殊字符
+            ESCAPED_BODY=$(echo "$BODY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+            
+            # 判断是否草稿（closed 状态）
+            DRAFT="false"
             if [ "$STATE" = "closed" ]; then
-              DRAFT_STATUS="draft: true"
-            else
-              DRAFT_STATUS="draft: false"
+              DRAFT="true"
             fi
             
-            # 创建或更新 markdown 文件
+            # 创建 markdown 文件
             {
               echo '---'
               echo "title: \"$ESCAPED_TITLE\""
               echo "date: $CREATED_AT"
               echo "updated: $UPDATED_AT"
               echo "issue_number: $NUMBER"
-              echo "labels: [$LABELS]"
-              echo "state: $STATE"
-              echo "$DRAFT_STATUS"
+              if [ -n "$LABELS" ]; then
+                echo "labels: [$LABELS]"
+              else
+                echo "labels: []"
+              fi
+              echo "draft: $DRAFT"
               echo '---'
               echo ''
-              echo "$BODY"
+              echo "$ESCAPED_BODY"
             } > "$FILEPATH"
             
-            echo "Processed post: $FILENAME (state: $STATE)"
+            echo "Created/Updated post: $FILENAME (draft: $DRAFT)"
           done
           
-      - name: Clean orphaned posts (for deleted issues)
-        run: |
-          cd source-repo/source/_posts
-          
-          # 获取所有活跃的 issue 编号
-          ACTIVE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-            "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100" | \
-            jq -r '.[].number')
-          
-          # 检查每个 post 文件，如果对应的 issue 不存在则删除
-          for file in *.md; do
-            if [ -f "$file" ]; then
-              ISSUE_NUM=$(grep "^issue_number:" "$file" | awk '{print $2}')
-              if [ -n "$ISSUE_NUM" ] && ! echo "$ACTIVE_ISSUES" | grep -q "^$ISSUE_NUM$"; then
-                echo "Removing orphaned post: $file (issue #$ISSUE_NUM not found)"
-                rm -f "$file"
-              fi
-            fi
-          done
-          
-      - name: Check if any posts exist
+      - name: Check if any posts were created
         id: check_posts
         run: |
-          POST_COUNT=$(ls -1 source-repo/source/_posts/*.md 2>/dev/null | wc -l)
+          POST_COUNT=$(find source-repo/source/_posts -name "*.md" -type f 2>/dev/null | wc -l)
           echo "post_count=$POST_COUNT" >> $GITHUB_OUTPUT
           echo "Found $POST_COUNT posts"
           
@@ -201,13 +186,47 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           
-          # 添加所有变更（包括删除的文件）
-          git add -A
+          # 添加所有文章到 git（包括删除的文件）
+          git add source/_posts/
           
           # 检查是否有变更
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "Update posts from issues [skip ci]"
+            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
+          fi
+          
+      - name: Clean up orphaned post files
+        if: always() && steps.check_posts.outputs.post_count > 0
+        run: |
+          cd source-repo
+          
+          # 获取所有现有的 issue 编号
+          ISSUE_NUMBERS=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+            "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100" | \
+            jq -r '.[].number')
+          
+          # 检查 _posts 目录中的每个文件
+          for file in source/_posts/*.md; do
+            if [ -f "$file" ]; then
+              # 提取 issue_number
+              ISSUE_NUM=$(grep "^issue_number:" "$file" | awk '{print $2}')
+              if [ -n "$ISSUE_NUM" ]; then
+                # 如果 issue_number 不在当前列表中，删除文件
+                if ! echo "$ISSUE_NUMBERS" | grep -q "^$ISSUE_NUM$"; then
+                  echo "Removing orphaned post: $file (issue #$ISSUE_NUM not found)"
+                  rm -f "$file"
+                  git add "$file"
+                fi
+              fi
+            fi
+          done
+          
+          # 提交删除操作
+          if git diff --staged --quiet; then
+            echo "No orphaned files to remove"
+          else
+            git commit -m "Remove orphaned post files [skip ci]"
             git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
           fi

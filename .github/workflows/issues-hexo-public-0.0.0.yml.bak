@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: '指定要处理的 Issue 编号，留空则处理所有'
+        description: '指定 Issue 编号，留空默认所有'
         required: false
         default: ''
 
