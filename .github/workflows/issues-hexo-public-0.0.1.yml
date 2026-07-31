@@ -82,20 +82,36 @@ jobs:
           # 清理现有的 _posts 目录（可选，避免残留文件）
           # rm -rf ../source-repo/source/_posts/*.md
           
-          # 获取所有 issues（包括关闭的）
-          ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-            "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100")
+          # 获取所有 issues（包括关闭的）- 分页处理
+          PAGE=1
+          ALL_ISSUES=""
+          while true; do
+            PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
+            
+            COUNT=$(echo "$PAGE_ISSUES" | jq '. | length')
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+            
+            if [ -z "$ALL_ISSUES" ]; then
+              ALL_ISSUES="$PAGE_ISSUES"
+            else
+              ALL_ISSUES=$(echo "$ALL_ISSUES $PAGE_ISSUES" | jq -s 'add')
+            fi
+            PAGE=$((PAGE + 1))
+          done
           
           # 如果指定 issue_number，只处理此 issue
           if [ -n "${{ github.event.inputs.issue_number }}" ]; then
             ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
             ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
               "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues/$ISSUE_NUMBER")
-            ISSUES="[$ISSUE]"
+            ALL_ISSUES="[$ISSUE]"
           fi
           
           # 处理每个 issue
-          echo "$ISSUES" | jq -c '.[]' | while read -r issue; do
+          echo "$ALL_ISSUES" | jq -c '.[]' | while read -r issue; do
             # 提取信息
             TITLE=$(echo "$issue" | jq -r '.title')
             NUMBER=$(echo "$issue" | jq -r '.number')
@@ -202,10 +218,28 @@ jobs:
         run: |
           cd source-repo
           
-          # 获取所有现有的 issue 编号
-          ISSUE_NUMBERS=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-            "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100" | \
-            jq -r '.[].number')
+          # 获取所有现有的 issue 编号（分页处理）
+          PAGE=1
+          ISSUE_NUMBERS=""
+          while true; do
+            PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
+            
+            COUNT=$(echo "$PAGE_ISSUES" | jq '. | length')
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+            
+            # 提取 issue numbers
+            PAGE_NUMBERS=$(echo "$PAGE_ISSUES" | jq -r '.[].number')
+            ISSUE_NUMBERS="$ISSUE_NUMBERS $PAGE_NUMBERS"
+            PAGE=$((PAGE + 1))
+          done
+          
+          # 如果指定了 issue_number，只检查该 issue
+          if [ -n "${{ github.event.inputs.issue_number }}" ]; then
+            ISSUE_NUMBERS="${{ github.event.inputs.issue_number }}"
+          fi
           
           # 检查 _posts 目录中的每个文件
           for file in source/_posts/*.md; do
@@ -214,10 +248,9 @@ jobs:
               ISSUE_NUM=$(grep "^issue_number:" "$file" | awk '{print $2}')
               if [ -n "$ISSUE_NUM" ]; then
                 # 如果 issue_number 不在当前列表中，删除文件
-                if ! echo "$ISSUE_NUMBERS" | grep -q "^$ISSUE_NUM$"; then
+                if ! echo "$ISSUE_NUMBERS" | grep -q "\b$ISSUE_NUM\b"; then
                   echo "Removing orphaned post: $file (issue #$ISSUE_NUM not found)"
-                  rm -f "$file"
-                  git add "$file"
+                  git rm -f "$file"
                 fi
               fi
             fi
