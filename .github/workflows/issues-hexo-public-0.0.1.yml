@@ -81,6 +81,10 @@ jobs:
         run: |
           cd source-repo
           
+          # 配置 git 用户信息
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
           # 获取所有现有的 issue 信息（包括编号和标题）
           PAGE=1
           ISSUE_DATA=""
