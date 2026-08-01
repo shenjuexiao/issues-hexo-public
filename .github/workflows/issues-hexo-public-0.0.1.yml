@@ -2,7 +2,7 @@
 # github.com/shenjuexiao
 # 20260731
 
-# https://github.com/flytam/blog/issues/27
+# github.com/flytam/blog/issues/27
 # issue 新增或者修改时触发工作流
 # 拉取 hexo 源文件
 # 将 issue 生成 hexo 源文件并输出到 hexo 源文件 blog-source 仓库的文章目录下并提交到 blog-source 仓库
