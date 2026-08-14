@@ -1,0 +1,279 @@
+# issues-hexo-public-0.0.1.yml
+# github.com/shenjuexiao
+# 20260814
+
+# .github/workflows/issues-hexo-public-0.0.1.yml
+name: issues-hexo-public
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled, deleted]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: '指定 Issue 编号，留空默认所有'
+        required: false
+        default: ''
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+      id-token: write
+      pages: write
+    
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          repository: shenjuexiao/issues-hexo-source
+          token: ${{ secrets.ISSUES_HEXO }}
+          path: source-repo
+          
+      - name: Checkout blog repository (for issues)
+        uses: actions/checkout@v4
+        with:
+          repository: shenjuexiao/issues-hexo-public
+          token: ${{ secrets.ISSUES_HEXO }}
+          path: blog-repo
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          
+      - name: Install Hexo dependencies
+        run: |
+          cd source-repo
+          npm install
+          
+      - name: Clean up orphaned and duplicate post files BEFORE generation
+        run: |
+          cd source-repo
+          
+          # 配置 git 用户信息
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          # 获取所有现有的 Issue 信息（包括编号和标题）
+          PAGE=1
+          ISSUE_DATA=""
+          while true; do
+            PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
+            
+            COUNT=$(echo "$PAGE_ISSUES" | jq '. | length')
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+            
+            if [ -z "$ISSUE_DATA" ]; then
+              ISSUE_DATA="$PAGE_ISSUES"
+            else
+              ISSUE_DATA=$(echo "$ISSUE_DATA $PAGE_ISSUES" | jq -s 'add')
+            fi
+            PAGE=$((PAGE + 1))
+          done
+          
+          # 如果指定了 issue_number，只处理该 issue
+          if [ -n "${{ github.event.inputs.issue_number }}" ]; then
+            ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
+            ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues/$ISSUE_NUMBER")
+            ISSUE_DATA="[$ISSUE]"
+          fi
+          
+          # 为每个 Issue 生成预期的文件名
+          echo "$ISSUE_DATA" | jq -c '.[]' | while read -r issue; do
+            NUMBER=$(echo "$issue" | jq -r '.number')
+            TITLE=$(echo "$issue" | jq -r '.title')
+            CREATED_AT=$(echo "$issue" | jq -r '.created_at')
+            
+            SAFE_TITLE=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
+            DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
+            EXPECTED_FILENAME="${DATE}-${SAFE_TITLE}.md"
+            
+            # 存储期望的文件名
+            echo "$NUMBER:$EXPECTED_FILENAME" >> /tmp/expected_files.txt
+          done
+          
+          # 检查 _posts 目录中的每个文件
+          for file in source/_posts/*.md; do
+            if [ -f "$file" ]; then
+              FILENAME=$(basename "$file")
+              
+              # 提取 issue_number
+              ISSUE_NUM=$(grep "^issue_number:" "$file" | awk '{print $2}')
+              
+              if [ -n "$ISSUE_NUM" ]; then
+                # 检查这个 Issue 是否还存在
+                ISSUE_EXISTS=$(echo "$ISSUE_DATA" | jq -r ".[] | select(.number == $ISSUE_NUM) | .number")
+                
+                if [ -z "$ISSUE_EXISTS" ]; then
+                  # Issue 已被删除
+                  echo "Removing orphaned post: $file (issue #$ISSUE_NUM not found)"
+                  git rm -f "$file"
+                else
+                  # 检查文件名是否匹配期望的文件名
+                  EXPECTED=$(grep "^$ISSUE_NUM:" /tmp/expected_files.txt | cut -d':' -f2)
+                  if [ -n "$EXPECTED" ] && [ "$FILENAME" != "$EXPECTED" ]; then
+                    # 文件名不匹配（标题已更改），删除旧文件
+                    echo "Removing old file: $file (expected: $EXPECTED, issue #$ISSUE_NUM title changed)"
+                    git rm -f "$file"
+                  fi
+                fi
+              else
+                # 文件中没有 issue_number，可能是手动创建的，保留
+                echo "Skipping file without issue_number: $file"
+              fi
+            fi
+          done
+          
+          # 提交删除操作
+          if git diff --staged --quiet; then
+            echo "No orphaned or duplicate files to remove"
+          else
+            git commit -m "Remove orphaned and duplicate post files [skip ci]"
+            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
+          fi
+          
+      - name: Fetch and convert issues to markdown
+        run: |
+          cd blog-repo
+          mkdir -p ../source-repo/source/_posts
+          
+          # 获取所有 issues（包括关闭的）- 分页处理
+          PAGE=1
+          ALL_ISSUES=""
+          while true; do
+            PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
+            
+            COUNT=$(echo "$PAGE_ISSUES" | jq '. | length')
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+            
+            if [ -z "$ALL_ISSUES" ]; then
+              ALL_ISSUES="$PAGE_ISSUES"
+            else
+              ALL_ISSUES=$(echo "$ALL_ISSUES $PAGE_ISSUES" | jq -s 'add')
+            fi
+            PAGE=$((PAGE + 1))
+          done
+          
+          # 如果指定 issue_number，只处理此 issue
+          if [ -n "${{ github.event.inputs.issue_number }}" ]; then
+            ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
+            ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
+              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues/$ISSUE_NUMBER")
+            ALL_ISSUES="[$ISSUE]"
+          fi
+          
+          # 处理每个 issue
+          echo "$ALL_ISSUES" | jq -c '.[]' | while read -r issue; do
+            # 提取信息
+            TITLE=$(echo "$issue" | jq -r '.title')
+            NUMBER=$(echo "$issue" | jq -r '.number')
+            STATE=$(echo "$issue" | jq -r '.state')
+            CREATED_AT=$(echo "$issue" | jq -r '.created_at')
+            UPDATED_AT=$(echo "$issue" | jq -r '.updated_at')
+            BODY=$(echo "$issue" | jq -r '.body // ""')
+            LABELS=$(echo "$issue" | jq -r '.labels[].name' | paste -sd ',' -)
+            
+            # 清理标题作为文件名
+            SAFE_TITLE=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
+            
+            # 格式化日期 YYYY-MM-DD
+            DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
+            
+            # 生成文件名
+            FILENAME="${DATE}-${SAFE_TITLE}.md"
+            FILEPATH="../source-repo/source/_posts/$FILENAME"
+            
+            # 转义标题中的特殊字符用于 YAML front matter
+            ESCAPED_TITLE=$(echo "$TITLE" | sed 's/"/\\"/g')
+            
+            # 处理 body 内容，转义可能导致 YAML 解析问题的特殊字符
+            ESCAPED_BODY=$(echo "$BODY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+            
+            # 判断是否草稿（closed 状态）
+            DRAFT="false"
+            if [ "$STATE" = "closed" ]; then
+              DRAFT="true"
+            fi
+            
+            # 创建 markdown 文件
+            {
+              echo '---'
+              echo "title: \"$ESCAPED_TITLE\""
+              echo "date: $CREATED_AT"
+              echo "updated: $UPDATED_AT"
+              echo "issue_number: $NUMBER"
+              if [ -n "$LABELS" ]; then
+                echo "labels: [$LABELS]"
+              else
+                echo "labels: []"
+              fi
+              echo "draft: $DRAFT"
+              echo '---'
+              echo ''
+              echo "$ESCAPED_BODY"
+            } > "$FILEPATH"
+            
+            echo "Created/Updated post: $FILENAME (draft: $DRAFT)"
+          done
+          
+      - name: Push markdown files to source repository
+        run: |
+          cd source-repo
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          # 添加所有文章到 git（包括新文件和删除的文件）
+          git add source/_posts/
+          
+          # 检查是否有变更
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update posts from issues [skip ci]"
+            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
+          fi
+          
+      - name: Check if any posts exist
+        id: check_posts
+        run: |
+          POST_COUNT=$(find source-repo/source/_posts -name "*.md" -type f 2>/dev/null | wc -l)
+          echo "post_count=$POST_COUNT" >> $GITHUB_OUTPUT
+          echo "Found $POST_COUNT posts"
+          
+      - name: Generate Hexo static files
+        if: steps.check_posts.outputs.post_count > 0
+        run: |
+          cd source-repo
+          npx hexo clean
+          npx hexo generate
+          
+      - name: Deploy to gh-pages (current repository)
+        if: steps.check_posts.outputs.post_count > 0
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./source-repo/public
+          
+      - name: Deploy to gh-pages (other repository)
+        if: steps.check_posts.outputs.post_count > 0
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.ISSUES_HEXO }}
+          external_repository: shenjuexiao/issues-hexo-public
+          publish_branch: gh-pages
+          publish_dir: ./source-repo/public
