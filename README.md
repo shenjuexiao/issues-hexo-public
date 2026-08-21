@@ -1,1 +1,1 @@
-# shenjuexiao.com/issues-public
+# issues.shenjuexiao.com
