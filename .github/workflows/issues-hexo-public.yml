@@ -268,14 +268,15 @@ jobs:
           personal_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: ./source-repo/public
-          cname: issues-hexo.shenjuexiao.com        
-
-      - name: Deploy to gh-pages (other repository)
-        if: steps.check_posts.outputs.post_count > 0
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          personal_token: ${{ secrets.ISSUES_HEXO }}
-          external_repository: shenjuexiao/issues-hexo-source
-          publish_branch: gh-pages
-          publish_dir: ./source-repo/public
           cname: issues-hexo.shenjuexiao.com
+
+      # - name: Deploy to gh-pages (other repository)
+        # if: steps.check_posts.outputs.post_count > 0
+        # uses: peaceiris/actions-gh-pages@v4
+        # with:
+          # personal_token: ${{ secrets.ISSUES_HEXO }}
+          # external_repository: shenjuexiao/issues-hexo-source
+          # publish_branch: gh-pages
+          # publish_dir: ./source-repo/public
+          # cname: issues-hexo.shenjuexiao.com
+
