@@ -2,7 +2,7 @@
 # github.com/shenjuexiao
 # 20260830
 
-# .github/workflows/issues-hexo-public-0.0.2.yml
+# .github/workflows/issues-hexo-public.yml
 name: issues-hexo-public
 
 on:
@@ -32,14 +32,14 @@ jobs:
       - name: Checkout source repository
         uses: actions/checkout@v4
         with:
-          repository: shenjuexiao/issues-hexo-source
+          repository: shenjuexiao/issues-hexo
           token: ${{ secrets.ISSUES_HEXO }}
           path: source-repo
           
       - name: Checkout blog repository (for issues)
         uses: actions/checkout@v4
         with:
-          repository: shenjuexiao/issues-hexo-public
+          repository: shenjuexiao/issues-public
           token: ${{ secrets.ISSUES_HEXO }}
           path: blog-repo
           
@@ -58,15 +58,18 @@ jobs:
           cd source-repo
           
           # 配置 git 用户信息
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+          # 20260820
+          # git config user.name "GitHub Actions"
+          git config user.name "shenjuexiao"
+          # git config user.email "actions@github.com"
+          git config user.email "60324485+shenjuexiao@users.noreply.github.com"
           
           # 获取所有现有的 Issue 信息（包括编号和标题）
           PAGE=1
           ISSUE_DATA=""
           while true; do
             PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
+              "https://api.github.com/repos/shenjuexiao/issues-public/issues?state=all&per_page=100&page=$PAGE")
             
             COUNT=$(echo "$PAGE_ISSUES" | jq '. | length')
             if [ "$COUNT" -eq 0 ]; then
@@ -85,7 +88,7 @@ jobs:
           if [ -n "${{ github.event.inputs.issue_number }}" ]; then
             ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
             ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues/$ISSUE_NUMBER")
+              "https://api.github.com/repos/shenjuexiao/issues-public/issues/$ISSUE_NUMBER")
             ISSUE_DATA="[$ISSUE]"
           fi
           
@@ -140,7 +143,7 @@ jobs:
             echo "No orphaned or duplicate files to remove"
           else
             git commit -m "Remove orphaned and duplicate post files [skip ci]"
-            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
+            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo.git main
           fi
           
       - name: Fetch and convert issues to markdown
@@ -153,7 +156,7 @@ jobs:
           ALL_ISSUES=""
           while true; do
             PAGE_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues?state=all&per_page=100&page=$PAGE")
+              "https://api.github.com/repos/shenjuexiao/issues-public/issues?state=all&per_page=100&page=$PAGE")
             
             COUNT=$(echo "$PAGE_ISSUES" | jq '. | length')
             if [ "$COUNT" -eq 0 ]; then
@@ -172,7 +175,7 @@ jobs:
           if [ -n "${{ github.event.inputs.issue_number }}" ]; then
             ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
             ISSUE=$(curl -s -H "Authorization: token ${{ secrets.ISSUES_HEXO }}" \
-              "https://api.github.com/repos/shenjuexiao/issues-hexo-public/issues/$ISSUE_NUMBER")
+              "https://api.github.com/repos/shenjuexiao/issues-public/issues/$ISSUE_NUMBER")
             ALL_ISSUES="[$ISSUE]"
           fi
           
@@ -244,7 +247,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Update posts from issues [skip ci]"
-            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo-source.git main
+            git push https://x-access-token:${{ secrets.ISSUES_HEXO }}@github.com/shenjuexiao/issues-hexo.git main
           fi
           
       - name: Check if any posts exist
@@ -268,15 +271,4 @@ jobs:
           personal_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: ./source-repo/public
-          cname: issues-hexo.shenjuexiao.com
-
-      # - name: Deploy to gh-pages (other repository)
-        # if: steps.check_posts.outputs.post_count > 0
-        # uses: peaceiris/actions-gh-pages@v4
-        # with:
-          # personal_token: ${{ secrets.ISSUES_HEXO }}
-          # external_repository: shenjuexiao/issues-hexo-source
-          # publish_branch: gh-pages
-          # publish_dir: ./source-repo/public
-          # cname: issues-hexo.shenjuexiao.com
-
+          cname: issues-public.shenjuexiao.com
